@@ -1,10 +1,13 @@
 import json
 from contextlib import ExitStack
+from unittest.mock import Mock
 
 import httpx
 import pytest
 
+from supportops.conversation import Conversation
 from supportops.llm_client import LLMResponse, OllamaClient, ToolCall
+from supportops.tool_runner import ToolRunner
 
 
 @pytest.fixture
@@ -235,7 +238,9 @@ def test_chat_rejects_non_string_content_even_with_tools(
         OllamaClient("http://ollama.test", "qwen3.5:4b").chat([])
 
 
-@pytest.mark.parametrize("tool_calls", ["invalid", 123, False, 0, "", {}])
+@pytest.mark.parametrize(
+    "tool_calls", ["invalid", 123, False, 0, "", {}, {"function": {}}]
+)
 def test_chat_rejects_non_array_tool_calls(mock_http, response_data, tool_calls):
     response_data["message"]["tool_calls"] = tool_calls
     mock_http(lambda request: httpx.Response(200, json=response_data))
@@ -245,42 +250,89 @@ def test_chat_rejects_non_array_tool_calls(mock_http, response_data, tool_calls)
 
 
 @pytest.mark.parametrize(
-    "invalid_call",
+    ("invalid_call", "error"),
     [
-        None,
-        "invalid",
-        {},
-        {"function": None},
-        {"function": []},
-        {"function": "invalid"},
-        {"function": {}},
-        {"function": {"name": 123, "arguments": {}}},
-        {"function": {"name": "get_ticket_status", "arguments": "invalid"}},
+        pytest.param(
+            None, "Invalid tool call structure: expected a dictionary", id="null-call"
+        ),
+        pytest.param(
+            "invalid",
+            "Invalid tool call structure: expected a dictionary",
+            id="string-call",
+        ),
+        pytest.param(
+            {}, "missing mandatory 'function' envelope", id="missing-function"
+        ),
+        pytest.param({"function": None}, "Invalid 'function' data", id="null-function"),
+        pytest.param({"function": []}, "Invalid 'function' data", id="list-function"),
+        pytest.param(
+            {"function": "invalid"}, "Invalid 'function' data", id="string-function"
+        ),
+        pytest.param(
+            {"function": {}}, "Invalid or missing tool name", id="missing-name"
+        ),
+        pytest.param(
+            {"function": {"name": 123, "arguments": {}}},
+            "Invalid or missing tool name",
+            id="non-string-name",
+        ),
+        pytest.param(
+            {"function": {"name": "", "arguments": {}}},
+            "Invalid or missing tool name",
+            id="empty-name",
+        ),
+        pytest.param(
+            {"function": {"name": " \t", "arguments": {}}},
+            "Invalid or missing tool name",
+            id="blank-name",
+        ),
+        pytest.param(
+            {"function": {"name": "get_ticket_status"}},
+            "Invalid arguments block format",
+            id="missing-arguments",
+        ),
+        pytest.param(
+            {"function": {"name": "get_ticket_status", "arguments": None}},
+            "Invalid arguments block format",
+            id="null-arguments",
+        ),
+        pytest.param(
+            {"function": {"name": "get_ticket_status", "arguments": []}},
+            "Invalid arguments block format",
+            id="list-arguments",
+        ),
+        pytest.param(
+            {"function": {"name": "get_ticket_status", "arguments": "invalid"}},
+            "Invalid arguments block format",
+            id="string-arguments",
+        ),
     ],
 )
-@pytest.mark.parametrize("has_valid_call", [False, True])
-def test_chat_skips_malformed_tool_calls(
-    mock_http, response_data, invalid_call, has_valid_call
+@pytest.mark.parametrize(
+    ("content", "valid_call_position"),
+    [
+        pytest.param("", None, id="only-invalid-call"),
+        pytest.param("Checking the ticket.", "before", id="valid-call-before-invalid"),
+        pytest.param("", "after", id="valid-call-after-invalid"),
+    ],
+)
+def test_chat_rejects_malformed_tool_calls(
+    mock_http, response_data, invalid_call, error, content, valid_call_position
 ):
     calls = [invalid_call]
-    if has_valid_call:
-        calls.append(
-            {"function": {"name": "get_ticket_status", "arguments": {"ticket_id": 123}}}
-        )
-    response_data["message"] = {"content": "", "tool_calls": calls}
+    valid_call = {
+        "function": {"name": "get_ticket_status", "arguments": {"ticket_id": 123}}
+    }
+    if valid_call_position == "before":
+        calls.insert(0, valid_call)
+    elif valid_call_position == "after":
+        calls.append(valid_call)
+    response_data["message"] = {"content": content, "tool_calls": calls}
     mock_http(lambda request: httpx.Response(200, json=response_data))
     client = OllamaClient("http://ollama.test", "qwen3.5:4b")
 
-    if has_valid_call:
-        assert client.chat([]).tool_calls == (
-            ToolCall("get_ticket_status", {"ticket_id": 123}),
-        )
-    else:
-        with pytest.raises(
-            ValueError,
-            match="must contain either non-empty content or valid tool calls",
-        ):
-            client.chat([])
+    with pytest.raises(ValueError, match=error):
+        client.chat([])
 
 
 @pytest.mark.parametrize("tool_calls", [None, []])
@@ -292,3 +344,50 @@ def test_chat_accepts_text_without_tool_calls(mock_http, response_data, tool_cal
 
     assert response.content == "Too Many Requests."
     assert response.tool_calls == ()
+
+
+@pytest.mark.parametrize(
+    "invalid_call_index",
+    [
+        pytest.param(0, id="invalid-first"),
+        pytest.param(1, id="invalid-between-valid-calls"),
+        pytest.param(2, id="invalid-last"),
+    ],
+)
+def test_mixed_tool_calls_do_not_execute_any_tool(
+    mock_http, response_data, invalid_call_index
+):
+    calls = [
+        {"function": {"name": "get_ticket_status", "arguments": {"ticket_id": 123}}},
+        {
+            "function": {
+                "name": "get_support_policy",
+                "arguments": {"topic": "working_hours"},
+            }
+        },
+    ]
+    calls.insert(invalid_call_index, {"function": None})
+    response_data["message"] = {
+        "content": "Checking the ticket and support hours.",
+        "tool_calls": calls,
+    }
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json=response_data)
+
+    mock_http(handler)
+    client = OllamaClient("http://ollama.test", "qwen3.5:4b")
+    runner = Mock(spec=ToolRunner, wraps=ToolRunner())
+    conversation = Conversation(
+        client, runner, system_prompt="You are a support assistant."
+    )
+    history_before = conversation.messages
+
+    with pytest.raises(ValueError, match="Invalid 'function' data"):
+        conversation.ask("Check ticket 123 and support working hours")
+
+    runner.run.assert_not_called()
+    assert len(requests) == 1
+    assert conversation.messages == history_before

@@ -43,6 +43,7 @@ class OllamaClient:
         )
         response.raise_for_status()
         data = response.json()
+
         if not isinstance(data, dict):
             raise ValueError(  # noqa: TRY004 - invalid response data, not a caller type error
                 "Invalid Ollama response: expected a JSON object"
@@ -67,20 +68,44 @@ class OllamaClient:
                 "Invalid Ollama response: 'message.tool_calls' must be an array"
             )
         parsed_tool_calls = []
+
         for tool_call in raw_tool_calls:
-            if not isinstance(tool_call, dict) or "function" not in tool_call:
-                continue
+            if not isinstance(tool_call, dict):
+                raise ValueError(  # noqa: TRY004 - invalid response data, not a caller type error
+                    f"Invalid tool call structure: expected a dictionary, got {type(tool_call).__name__}"
+                )
+
+            if "function" not in tool_call:
+                raise ValueError(
+                    "Invalid tool call structure: missing mandatory 'function' envelope"
+                )
+
             func_data = tool_call.get("function")
             if not isinstance(func_data, dict):
-                continue
+                raise ValueError(  # noqa: TRY004 - invalid response data, not a caller type error
+                    f"Invalid 'function' data: expected a dictionary, got {type(func_data).__name__}"
+                )
+
             name = func_data.get("name")
             arguments = func_data.get("arguments")
-            if isinstance(name, str) and isinstance(arguments, dict):
-                parsed_tool_calls.append(ToolCall(name=name, arguments=arguments))
+
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(
+                    f"Invalid or missing tool name in model payload: {name}"
+                )
+
+            if not isinstance(arguments, dict):
+                raise ValueError(  # noqa: TRY004 - invalid response data, not a caller type error
+                    f"Invalid arguments block format for tool '{name}': "
+                    f"expected an object/dictionary, got {type(arguments).__name__}"
+                )
+
+            parsed_tool_calls.append(ToolCall(name=name, arguments=arguments))
 
         tool_calls_tuple = tuple(parsed_tool_calls)
         has_content = isinstance(content, str) and bool(content.strip())
         has_tool = len(tool_calls_tuple) > 0
+
         if not has_content and not has_tool:
             raise ValueError(
                 "Invalid Ollama response: must contain either non-empty content or valid tool calls"

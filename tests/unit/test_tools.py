@@ -95,3 +95,45 @@ def test_support_scenarios(question, tool_call, tool_result, answer):
         assert conversation.messages == payloads[1] + [final_message]
     assert [call.kwargs["tools"] for call in model_calls] == [schemas] * len(outcomes)
     assert client.chat.call_count == len(outcomes)
+
+
+@pytest.mark.parametrize(
+    ("question", "tool_call", "error"),
+    [
+        pytest.param(
+            "Check ticket abc",
+            ToolCall("get_ticket_status", {"ticket_id": "abc"}),
+            "Invalid type for argument 'ticket_id'.*Expected int, got str",
+            id="ticket-id-abc",
+        ),
+        pytest.param(
+            "Check ticket true",
+            ToolCall("get_ticket_status", {"ticket_id": True}),
+            "Invalid type for argument 'ticket_id'.*Expected int, got bool",
+            id="ticket-id-bool",
+        ),
+        pytest.param(
+            "Get support policy for topic 123",
+            ToolCall("get_support_policy", {"topic": 123}),
+            "Invalid type for argument 'topic'.*Expected str, got int",
+            id="topic-integer",
+        ),
+    ],
+)
+def test_invalid_model_arguments_stop_conversation(question, tool_call, error):
+    client = Mock(spec=LLMClient)
+    client.chat.return_value = LLMResponse("", "fake-model", 10, 5, 0.1, (tool_call,))
+    runner = Mock(spec=ToolRunner, wraps=ToolRunner())
+    conversation = Conversation(
+        client, runner, system_prompt="You are a support assistant."
+    )
+    history_before = conversation.messages
+
+    with pytest.raises(ValueError, match=error):
+        conversation.ask(question)
+
+    runner.run.assert_called_once_with(tool_call)
+    client.chat.assert_called_once_with(
+        history_before + [{"role": "user", "content": question}], tools=None
+    )
+    assert conversation.messages == history_before
