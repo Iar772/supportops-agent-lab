@@ -39,26 +39,12 @@ TOOLS_SCHEMAS = [
 ]
 
 
-# 2. Инициализируем компоненты
 client = OllamaClient(base_url="http://localhost:11434", model="qwen3.5:4b")
 runner = ToolRunner()
 
-# =====================================================================
-# ТЕСТ СЦЕНАРИЙ 1: Запрос статуса заявки
-# =====================================================================
-# conv1 = Conversation(client=client, runner=runner)
-# response1 = conv1.ask("Проверь статус заявки 123.", tools=TOOLS_SCHEMAS)
-#
-# print("--- Тест 1 ---")
-# print("Финальный текст ответа:", response1.content)
-
-
-# =====================================================================
-# ТЕСТ СЦЕНАРИЙ 2: Запрос политики поддержки
-# =====================================================================
 conv2 = Conversation(client=client, runner=runner)
-question = "Какой статус у заявки 123 и как быстро вы отвечаете на срочные обращения?"
+question = "whats the status of request 123"
 response2 = conv2.ask(question, tools=TOOLS_SCHEMAS)
 print(question)
 print('----')
-print("Финальный текст ответа:", response2.content)
+print("final response:", response2.content)
