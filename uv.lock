@@ -830,6 +830,7 @@ dependencies = [
     { name = "httpx" },
     { name = "langchain" },
     { name = "langchain-ollama" },
+    { name = "pydantic" },
 ]
 
 [package.dev-dependencies]
@@ -843,6 +844,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "langchain", specifier = ">=1.4.8" },
     { name = "langchain-ollama", specifier = ">=1.1.0" },
+    { name = "pydantic", specifier = ">=2.0" },
 ]
 
 [package.metadata.requires-dev]
